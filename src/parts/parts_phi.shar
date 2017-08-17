@@ -1,0 +1,336 @@
+# This is a shell archive.  Save it in a file, remove anything before
+# this line, and then unpack it by entering "sh file".  Note, it may
+# create directories; files and directories will be owned by you and
+# have default permissions.
+#
+# This archive contains:
+#
+#	efindsite_phi
+#
+echo x - parts_phi
+sed 's/^X//' >parts_phi << 'END-of-efindsite_phi'
+X#!/usr/bin/perl -w
+X
+X#===============================================================================
+X#         ___________.__            .____________.__  __          
+X#     ____\_   _____/|__| ____    __| _/   _____/|__|/  |_  ____  
+X#   _/ __ \|    __)  |  |/    \  / __ |\_____  \ |  \   __\/ __ \ 
+X#   \  ___/|     \   |  |   |  \/ /_/ |/        \|  ||  | \  ___/ 
+X#    \___  >___  /   |__|___|  /\____ /_______  /|__||__|  \___  >
+X#        \/    \/            \/      \/       \/               \/ 
+X#
+X#                                                  
+X#   eFindSite - ligand-binding site prediction from meta-threading
+X#
+X#   Computational Systems Biology Group
+X#   Department of Biological Sciences
+X#   Center for Computation & Technology
+X#   Louisiana State University
+X#   407 Choppin Hall, Baton Rouge, LA 70803, USA
+X#
+X#   http://www.brylinski.org
+X#
+X#   Report bugs to michal@brylinski.org wfeinstein@lsu.edu
+X#
+X#   Copyright 2013 Michal Brylinski, Wei Feinstein
+X#
+X#   This file is part of eFindSite.
+X#
+X#   eFindSite is free software: you can redistribute it and/or modify
+X#   it under the terms of the GNU General Public License as published by
+X#   the Free Software Foundation, either version 3 of the License, or
+X#   (at your option) any later version.
+X#
+X#   eFindSite is distributed in the hope that it will be useful,
+X#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+X#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+X#   GNU General Public License for more details.
+X#
+X#   You should have received a copy of the GNU General Public License
+X#   along with eFindSite. If not, see <http://www.gnu.org/licenses/>.
+X#
+X#===============================================================================
+X 
+X use strict;
+X use Benchmark;
+X use List::MoreUtils qw(uniq);
+X use File::Slurp;
+X use File::Basename qw( fileparse );
+X use File::Path qw( make_path );
+X use Proc::Background;
+X 
+X $ENV{'OMP_NUM_THREADS'} = '256' if !( $ENV{'OMP_NUM_THREADS'} );
+X $ENV{'OMP_STACKSIZE'} = '64M' if !( $ENV{'OMP_STACKSIZE'} );
+X
+X local $| = 1;
+X 
+X print "------------------------------------------------------------\n";
+X print "                       efindsite-phi\n";
+X print "                        version 1.2\n";
+X print "       heterogeneous processing system for CPU and PHI\n\n";
+X print "       report bugs and issues to michal\@brylinski.org\n";
+X print "------------------------------------------------------------\n\n";
+X 
+X die "EF_MAP is not set\n" if !( $ENV{'EF_MAP'} );
+X 
+X if ($#ARGV < 1)
+X {
+X  print "efindsite_phi -l <list of targets>\n";
+X  print "              -b <sequence identity threshold (default 1.0)>\n";
+X  print "              -x <max number of templates (default 250)>\n";
+X  die "\n";
+X }
+X
+X my $flst1 = '';
+X my $foptb = 1.0;
+X my $foptx = 250;
+X 
+X my $n_cpu = 4;
+X 
+X for ( my $i = 0; $i <= $#ARGV; $i++ )
+X {
+X  $flst1 = $ARGV[$i+1] if ( $ARGV[$i] eq '-l' );
+X  $foptb = $ARGV[$i+1] if ( $ARGV[$i] eq '-b' );
+X  $foptx = $ARGV[$i+1] if ( $ARGV[$i] eq '-x' );
+X }
+X 
+X $foptx = 250 if ( $foptx > 250 );
+X 
+X my $ef_map = $ENV{'EF_MAP'};
+X 
+X die "Provide list of targets\n" if ( !( -e $flst1 ) or !length($flst1) );
+X 
+X die "Wrong EF_MAP: $ef_map\n" if ( !( -e $ef_map ) or !length($ef_map) );
+X 
+X my $bt0 = Benchmark->new;
+X my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+X my $tag = sprintf("%04d.%02d%02d.%02d%02d", $year+1900, $mon+1, $mday, $hour, $min);
+X 
+X my @map1 = read_file($ef_map); chomp(@map1);
+X 
+X my %map2 = ();
+X 
+X foreach my $wmap1 (@map1)
+X {
+X  my $tpl1 = substr($wmap1, 0, 15);
+X  
+X  while ( $tpl1 =~ /\ / ) { $tpl1 =~ s/\ //g; }
+X  
+X  my @tpl2 = split(/\ /, substr($wmap1, 21, length($wmap1) - 21));
+X  
+X  $map2{$tpl1} = \@tpl2;
+X }
+X 
+X my @lst1 = read_file($flst1); chomp(@lst1);
+X 
+X my %lst2 = ();
+X 
+X foreach my $wlst1 (@lst1)
+X {
+X  my @pdb1 = read_file($wlst1.'.pdb'); chomp(@pdb1);
+X  
+X  @pdb1 = grep(/ CA /, @pdb1);
+X  
+X  my $npdb1 = @pdb1;
+X  
+X  my @dat1 = read_file($wlst1.'.ethread-fun'); chomp(@dat1);
+X  
+X  my @dat2 = ();
+X  
+X  foreach my $wdat1 (@dat1)
+X  {
+X   my $dat2 = substr($wdat1, 0, 15);
+X   
+X   while ( $dat2 =~ /\ / ) { $dat2 =~ s/\ //g; }
+X   
+X   if ( exists $map2{$dat2} )
+X   {
+X    foreach my $dat3 ( @{$map2{$dat2}} )
+X    {
+X     push(@dat2, $dat3);
+X    }
+X   }
+X  }
+X  
+X  @dat2 = uniq sort { $a cmp $b } @dat2;
+X  
+X  my $ndat2 = @dat2;
+X  
+X  $ndat2 = $foptx if ( $ndat2 > $foptx );
+X  
+X  $lst2{$wlst1} = $npdb1 * $ndat2;
+X }
+X 
+X my @lst3 = ();
+X 
+X foreach my $wlst2 ( sort { $lst2{$a} <=> $lst2{$b} } keys %lst2 )
+X {
+X  push(@lst3, $wlst2);
+X }
+X 
+X my $nlst3 = @lst3;
+X 
+X my @j_cpu = ();
+X 
+X my @c_cpu = ();
+X 
+X my @l_cpu = ();
+X 
+X for ( my $xa = 0; $xa < $n_cpu; $xa++ )
+X {
+X  $j_cpu[$xa] = Proc::Background->new("echo > /dev/null");
+X  
+X  $c_cpu[$xa] = 0;
+X  $l_cpu[$xa] = 0;
+X }
+X 
+X 
+X # prep output directory
+X my $outdir = "output/$tag/";
+X if ( !-d $outdir ) {
+X     make_path $outdir or die "Failed to create path: $outdir";
+X } 
+X print "Processing $nlst3 eFindSite jobs using $n_cpu CPU cores.\n\n";
+X 
+X my $prg1 = 0;
+X 
+X # setup docker command and environment
+X my $pwd = $ENV{'PWD'};
+X
+X # part of the docker call that is common to all three parts
+X my $docker_cmn =
+X    "sudo docker run -t ". 
+X    "-v $pwd/data/efindsite-lib-latest/:/root/data/map ". 
+X    "-v $pwd/data/ethread-lib-latest.map:/root/data/map/ethread-lib-latest.map ".
+X    "-v $pwd/mod/:/root/data/mod ". 
+X    "-v $pwd/dataset-phi/:/root/dataset-phi ". 
+X    "-v $pwd/output/:/root/output ". 
+X    "-v $pwd/bin/:/root/bin ".
+X    "-e \"EF_LIB=/root/data/map\" ". 
+X    "-e \"EF_MAP=/root/data/map/ethread-lib-latest.map\" ". 
+X    "-e \"EF_MOD=/root/data/mod\" ". 
+X    "-e \"EF_APL=/root/lib/apclusterunix64.so\" ". 
+X    "--rm ". 
+X    "--ulimit stack=1073741824 ". 
+X    "";
+X
+X # individual docker commands
+X my $docker_ptA =  
+X    "$docker_cmn".
+X    "dd:do_partA ". 
+X    ""; 
+X my $docker_ptB =  
+X    "$docker_cmn".
+X    "dd:do_partB ". 
+X    ""; 
+X my $docker_ptC =  
+X    "$docker_cmn".
+X    "dd:do_partC ". 
+X    ""; 
+X
+X while ( @lst3 )
+X {
+X  # CPU jobs
+X  
+X  for ( my $xa = 0; $xa < $n_cpu; $xa++ )
+X  {
+X   if ( @lst3 and !$j_cpu[$xa]->alive )
+X   {
+X    my $job = shift(@lst3);
+X    
+X    printf("CPU%d <- %s ... %.1f%s\n", $xa, $job, (++$prg1/$nlst3)*100.0, '%');
+X    
+X    # make_path to $outdir$job
+X    # fileparse takes $outdir$job and separates filename and path_to_file
+X    # it leaves relative path as is
+X    #   e.g. $outdir$job = output/dir1/dir2/filename
+X    #        $filename = filename
+X    #        $path_to_file = output/dir1/dir2
+X    my ( $filename, $path_to_file ) = fileparse "$outdir$job";
+X    if ( !-d $path_to_file ) {
+X        make_path $path_to_file or die "Failed to create path: $path_to_file";
+X    }
+X    
+X    my $args_ptA =
+X        "-s $job.pdb ".
+X        "-t $job.ethread-fun ".
+X        "-i $job.ss ".
+X        "-e $job.prf ".
+X        "-o $outdir$job-ef-$tag ".
+X        "-b $foptb ".
+X        "-x $foptx ".
+X        ">> $outdir$job-ef-$tag.log 2>&1 ".
+X        "";
+X    my $args_ptB =
+X        "-j $outdir$job-ef-$tag ".
+X        ">> $outdir$job-ef-$tag.log 2>&1 ".
+X        "";
+X    my $args_ptC =
+X        "-j $outdir$job-ef-$tag ".
+X        ">> $outdir$job-ef-$tag.log 2>&1 ".
+X        "";
+X
+X    $j_cpu[$xa] = Proc::Background->new(
+X                    "$docker_ptA $args_ptA ".
+X                    "&& $docker_ptB $args_ptB ".
+X                    "&& $docker_ptC $args_ptC ".
+X                    ""
+X    );
+X    
+X    $c_cpu[$xa]++;
+X    $l_cpu[$xa] += $lst2{$job};
+X   }
+X  }
+X  
+X  sleep(2) if ( @lst3 );
+X }
+X 
+X for ( my $xa = 0; $xa < $n_cpu; $xa++ )
+X {
+X  $j_cpu[$xa]->wait;
+X }
+X 
+X 
+X print "\nPartitioning details:\n\n";
+X 
+X my $tot1 = 0;
+X my $tot2 = 0;
+X 
+X my $tot3 = 0;
+X my $tot4 = 0;
+X 
+X my $tot5 = 0;
+X my $tot6 = 0;
+X 
+X for ( my $xa = 0; $xa < $n_cpu; $xa++ )
+X {
+X  $tot1 += $c_cpu[$xa];
+X  $tot2 += $l_cpu[$xa];
+X  
+X  $tot3 += $c_cpu[$xa];
+X  $tot4 += $l_cpu[$xa];
+X }
+X 
+X for ( my $xa = 0; $xa < $n_cpu; $xa++ )
+X {
+X  printf("CPU%d       %5.1f%s %5.1f%s\n", $xa, ($c_cpu[$xa]/$tot1)*100.0, '%', ($l_cpu[$xa]/$tot2)*100.0, '%');
+X }
+X 
+X print "\n";
+X 
+X 
+X print "\n";
+X 
+X printf("Total CPU: %5.1f%s %5.1f%s\n", ($tot3/$tot1)*100.0, '%', ($tot4/$tot2)*100.0, '%');
+X 
+X my $bt1 = Benchmark->new;
+X 
+X print "\n";
+X printf("------------------------------------------------------------\n");
+X printf("Walltime: %s\n", timestr(timediff($bt1, $bt0)));
+X printf("------------------------------------------------------------\n");
+X 
+X exit(0);
+END-of-efindsite_phi
+exit
+
